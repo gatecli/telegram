@@ -16,7 +16,9 @@ import (
 
 type authCommand struct {
 	service *TelegramService
-	Token   string `positional-arg-name:"TOKEN" required:"true" description:"Telegram bot token"`
+	Args    struct {
+		Token string `positional-arg-name:"TOKEN" required:"true" description:"Telegram bot token"`
+	} `positional-args:"yes"`
 }
 
 func (c *authCommand) Execute(args []string) error {
@@ -27,7 +29,7 @@ func (c *authCommand) Execute(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := writeTelegramConfigValue(path, "botToken", strings.TrimSpace(c.Token)); err != nil {
+	if err := writeTelegramConfigValue(path, "botToken", strings.TrimSpace(c.Args.Token)); err != nil {
 		return err
 	}
 	_, err = fmt.Fprintln(os.Stdout, path)
@@ -283,9 +285,11 @@ func (c *chatCommand) Execute(args []string) error {
 
 type chatInfoCommand struct {
 	service *TelegramService
-	JSON    bool   `long:"json" description:"Output raw JSON"`
-	Photo   bool   `long:"photo" description:"Include profile photo information"`
-	ID      string `positional-arg-name:"ID" required:"true" description:"Telegram chat ID"`
+	JSON    bool `long:"json" description:"Output raw JSON"`
+	Photo   bool `long:"photo" description:"Include profile photo information"`
+	Args    struct {
+		ID string `positional-arg-name:"ID" required:"true" description:"Telegram chat ID"`
+	} `positional-args:"yes"`
 }
 
 func (c *chatInfoCommand) Execute(args []string) error {
@@ -300,7 +304,7 @@ func (c *chatInfoCommand) runWithArgs(args []string) error {
 }
 
 func (c *chatInfoCommand) run() error {
-	info, err := c.service.GetChat(context.Background(), c.ID)
+	info, err := c.service.GetChat(context.Background(), c.Args.ID)
 	if err != nil {
 		return err
 	}
@@ -313,7 +317,7 @@ func (c *chatInfoCommand) run() error {
 		"lastName":  info.LastName,
 	}
 	if c.Photo {
-		photos, err := c.service.GetUserProfilePhotos(context.Background(), c.ID)
+		photos, err := c.service.GetUserProfilePhotos(context.Background(), c.Args.ID)
 		if err != nil {
 			return err
 		}
@@ -353,7 +357,7 @@ func (c *mediaCommand) Execute(args []string) error {
 		}
 		return err
 	}
-	path, err := c.service.DownloadMedia(context.Background(), cmd.ID, cmd.Output)
+	path, err := c.service.DownloadMedia(context.Background(), cmd.Args.ID, cmd.Output)
 	if err != nil {
 		return err
 	}
@@ -363,7 +367,9 @@ func (c *mediaCommand) Execute(args []string) error {
 
 type mediaGetCommand struct {
 	Output string `short:"o" long:"output" description:"Write the downloaded file to this path"`
-	ID     string `positional-arg-name:"ID" required:"true" description:"Stored media UUID"`
+	Args   struct {
+		ID string `positional-arg-name:"ID" required:"true" description:"Stored media UUID"`
+	} `positional-args:"yes"`
 }
 
 func defaultMediaOutputPath(basePath string, metadata telegramMediaMetadata) string {
@@ -522,7 +528,8 @@ func writeStoredMessage(w *os.File, message gatecli.StoredMessage, jsonMode bool
 	if jsonMode {
 		payload := map[string]any{
 			"time":    message.DateTime.Format(time.RFC3339Nano),
-			"id":      message.User,
+			"id":      message.ID,
+			"user":    message.User,
 			"message": message.Items,
 		}
 		data, err := json.Marshal(payload)
@@ -532,6 +539,6 @@ func writeStoredMessage(w *os.File, message gatecli.StoredMessage, jsonMode bool
 		_, err = fmt.Fprintf(w, "%s\n", data)
 		return err
 	}
-	_, err := fmt.Fprintf(w, "[%s] id=%s message=%s\n", message.DateTime.Format(time.RFC3339Nano), message.User, gatecli.RenderMessage(message.Items))
+	_, err := fmt.Fprintf(w, "[%s] id=%s user=%s message=%s\n", message.DateTime.Format(time.RFC3339Nano), message.ID, message.User, gatecli.RenderMessage(message.Items))
 	return err
 }

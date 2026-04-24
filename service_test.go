@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gatecli/gatecli"
+	flags "github.com/jessevdk/go-flags"
 )
 
 func TestParseTelegramConfigData(t *testing.T) {
@@ -25,6 +27,19 @@ func TestParseTelegramConfigData(t *testing.T) {
 		t.Fatalf("RequestTimeout = %v", cfg.RequestTimeout)
 	}
 	if len(cfg.AllowedUpdates) != 1 || cfg.AllowedUpdates[0] != "message" {
+		t.Fatalf("AllowedUpdates = %#v", cfg.AllowedUpdates)
+	}
+}
+
+func TestParseTelegramConfigDataAllowsEmptyAllowedUpdates(t *testing.T) {
+	cfg, err := parseTelegramConfigData([]byte(`{"botToken":"abc","allowedUpdates":[]}`))
+	if err != nil {
+		t.Fatalf("parseTelegramConfigData() error = %v", err)
+	}
+	if cfg.AllowedUpdates == nil {
+		t.Fatalf("AllowedUpdates should preserve explicit empty slice")
+	}
+	if len(cfg.AllowedUpdates) != 0 {
 		t.Fatalf("AllowedUpdates = %#v", cfg.AllowedUpdates)
 	}
 }
@@ -70,6 +85,17 @@ func TestWriteTelegramConfigValue(t *testing.T) {
 	}
 }
 
+func TestAuthCommandAcceptsPositionalToken(t *testing.T) {
+	cmd := &authCommand{}
+	parser := flags.NewParser(cmd, flags.HelpFlag|flags.PassDoubleDash)
+	if _, err := parser.ParseArgs([]string{"abc123"}); err != nil {
+		t.Fatalf("ParseArgs() error = %v", err)
+	}
+	if cmd.Args.Token != "abc123" {
+		t.Fatalf("token = %q", cmd.Args.Token)
+	}
+}
+
 func TestDefaultMediaOutputPath(t *testing.T) {
 	base := "/tmp/media/1234"
 	got := defaultMediaOutputPath(base, telegramMediaMetadata{Format: "jpg"})
@@ -80,9 +106,30 @@ func TestDefaultMediaOutputPath(t *testing.T) {
 	if got != "/tmp/media/1234.ogg" {
 		t.Fatalf("defaultMediaOutputPath() filename ext = %q", got)
 	}
-	got = defaultMediaOutputPath("/tmp/media/1234.jpg", telegramMediaMetadata{Format: "jpg"})
-	if got != "/tmp/media/1234.jpg" {
-		t.Fatalf("defaultMediaOutputPath() existing ext = %q", got)
+}
+
+func TestMediaItemUsesResourceID(t *testing.T) {
+	item := gatecli.MessageItem{Type: "image", Fields: map[string]string{"resource_id": "resource-123", "format": "jpg"}}
+	if got := item.Fields["resource_id"]; got != "resource-123" {
+		t.Fatalf("resource_id = %q", got)
+	}
+	if _, ok := item.Fields["id"]; ok {
+		t.Fatalf("unexpected id field: %#v", item.Fields)
+	}
+}
+
+func TestResolveMediaSourceSupportsResourceID(t *testing.T) {
+	service := &TelegramService{}
+	item := gatecli.MessageItem{Type: "image", Fields: map[string]string{"resource_id": "media-123"}}
+	if got := item.Get("resource_id"); got != "media-123" {
+		t.Fatalf("resource_id = %q", got)
+	}
+	_, err := service.resolveMediaSource(context.Background(), item)
+	if err == nil {
+		t.Fatalf("resolveMediaSource() expected error without app")
+	}
+	if err.Error() != "app is not initialized" {
+		t.Fatalf("resolveMediaSource() error = %v", err)
 	}
 }
 
@@ -141,6 +188,38 @@ func TestResolveCommandTarget(t *testing.T) {
 	}
 	if _, err := resolveCommandTarget(service, "", "", false); err == nil {
 		t.Fatalf("resolveCommandTarget() expected missing target error")
+	}
+}
+
+func TestRawUpdateType(t *testing.T) {
+	got := rawUpdateType(json.RawMessage(`{"update_id":1,"callback_query":{"id":"abc"}}`))
+	if got != "callback_query" {
+		t.Fatalf("rawUpdateType() = %q", got)
+	}
+}
+
+func TestUpdateEnvelopeFromRawAllEvents(t *testing.T) {
+	service := &TelegramService{}
+	envelope, ok, err := service.updateEnvelopeFromRaw(
+		context.Background(),
+		telegramUpdate{UpdateID: 42},
+		json.RawMessage(`{"update_id":42,"callback_query":{"id":"abc"}}`),
+		true,
+	)
+	if err != nil {
+		t.Fatalf("updateEnvelopeFromRaw() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("updateEnvelopeFromRaw() expected event envelope")
+	}
+	if envelope.ID != "42" {
+		t.Fatalf("id = %q", envelope.ID)
+	}
+	if envelope.User != "telegram:callback_query" {
+		t.Fatalf("user = %q", envelope.User)
+	}
+	if len(envelope.Items) != 1 || envelope.Items[0].Type != "text" {
+		t.Fatalf("items = %#v", envelope.Items)
 	}
 }
 

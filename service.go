@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -142,6 +143,7 @@ func (s *TelegramService) Watch(ctx context.Context, opts gatecli.WatchOptions, 
 	if pollSeconds <= 0 {
 		pollSeconds = 1
 	}
+	allEvents := cfg.AllowedUpdates != nil && len(cfg.AllowedUpdates) == 0
 
 	for {
 		select {
@@ -151,47 +153,42 @@ func (s *TelegramService) Watch(ctx context.Context, opts gatecli.WatchOptions, 
 		}
 
 		params := map[string]any{
-			"timeout":         pollSeconds,
-			"allowed_updates": cfg.AllowedUpdates,
+			"timeout": pollSeconds,
+		}
+		if cfg.AllowedUpdates != nil {
+			params["allowed_updates"] = cfg.AllowedUpdates
 		}
 		if offset > 0 {
 			params["offset"] = offset
 		}
 
-		var updates []telegramUpdate
-		if err := s.callTelegram(ctx, cfg, "getUpdates", params, &updates); err != nil {
+		var rawUpdates []json.RawMessage
+		if err := s.callTelegram(ctx, cfg, "getUpdates", params, &rawUpdates); err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
 			return err
 		}
 
-		for _, update := range updates {
+		for _, rawUpdate := range rawUpdates {
+			var update telegramUpdate
+			if err := json.Unmarshal(rawUpdate, &update); err != nil {
+				return fmt.Errorf("decode telegram update: %w", err)
+			}
 			if update.UpdateID >= offset {
 				offset = update.UpdateID + 1
 			}
-			message := pickUpdateMessage(update)
-			if message == nil {
-				continue
-			}
-			user := strconv.FormatInt(message.Chat.ID, 10)
-			if strings.TrimSpace(opts.User) != "" && user != strings.TrimSpace(opts.User) {
-				continue
-			}
-			items, err := s.messageItemsFromTelegram(ctx, message)
+			envelope, ok, err := s.updateEnvelopeFromRaw(ctx, update, rawUpdate, allEvents)
 			if err != nil {
 				return err
 			}
-			if len(items) == 0 {
+			if !ok {
 				continue
 			}
-			event := gatecli.WatchEvent{Message: gatecli.MessageEnvelope{
-				ID:       strconv.FormatInt(message.MessageID, 10),
-				DateTime: time.Unix(message.Date, 0).UTC(),
-				User:     user,
-				Items:    items,
-			}}
-			if err := handler(ctx, event); err != nil {
+			if strings.TrimSpace(opts.User) != "" && envelope.User != strings.TrimSpace(opts.User) {
+				continue
+			}
+			if err := handler(ctx, gatecli.WatchEvent{Message: envelope}); err != nil {
 				return err
 			}
 		}
@@ -240,6 +237,56 @@ func (s *TelegramService) callTelegram(ctx context.Context, cfg TelegramConfig, 
 		return fmt.Errorf("decode %s result: %w", method, err)
 	}
 	return nil
+}
+
+func (s *TelegramService) updateEnvelopeFromRaw(ctx context.Context, update telegramUpdate, rawUpdate json.RawMessage, allEvents bool) (gatecli.MessageEnvelope, bool, error) {
+	if message := pickUpdateMessage(update); message != nil {
+		items, err := s.messageItemsFromTelegram(ctx, message)
+		if err != nil {
+			return gatecli.MessageEnvelope{}, false, err
+		}
+		if len(items) == 0 {
+			return gatecli.MessageEnvelope{}, false, nil
+		}
+		return gatecli.MessageEnvelope{
+			ID:       strconv.FormatInt(message.MessageID, 10),
+			DateTime: time.Unix(message.Date, 0).UTC(),
+			User:     strconv.FormatInt(message.Chat.ID, 10),
+			Items:    items,
+		}, true, nil
+	}
+	if !allEvents {
+		return gatecli.MessageEnvelope{}, false, nil
+	}
+	eventType := rawUpdateType(rawUpdate)
+	if eventType == "" {
+		eventType = "update"
+	}
+	return gatecli.MessageEnvelope{
+		ID:       strconv.FormatInt(update.UpdateID, 10),
+		DateTime: time.Now().UTC(),
+		User:     "telegram:" + eventType,
+		Items:    []gatecli.MessageItem{gatecli.TextItem(string(rawUpdate))},
+	}, true, nil
+}
+
+func rawUpdateType(rawUpdate json.RawMessage) string {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(rawUpdate, &payload); err != nil {
+		return ""
+	}
+	keys := make([]string, 0, len(payload))
+	for key := range payload {
+		if key == "update_id" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Strings(keys)
+	return keys[0]
 }
 
 func pickUpdateMessage(update telegramUpdate) *telegramMessage {
@@ -397,7 +444,7 @@ func (s *TelegramService) storeMediaItem(ctx context.Context, metadata telegramM
 	if err != nil {
 		return gatecli.MessageItem{}, err
 	}
-	fields["id"] = stored.ID
+	fields["resource_id"] = stored.ID
 	return gatecli.MessageItem{Type: metadata.Type, Fields: fields}, nil
 }
 
@@ -407,9 +454,9 @@ func (s *TelegramService) resolveMediaSource(ctx context.Context, item gatecli.M
 			return value, nil
 		}
 	}
-	mediaID := strings.TrimSpace(item.Get("id"))
+	mediaID := strings.TrimSpace(item.Get("resource_id"))
 	if mediaID == "" {
-		return "", fmt.Errorf("message item %q requires one of id, file_id, fileId or url", item.Type)
+		return "", fmt.Errorf("message item %q requires one of resource_id, file_id, fileId or url", item.Type)
 	}
 	if s.app == nil {
 		return "", fmt.Errorf("app is not initialized")

@@ -297,9 +297,9 @@ Send a message with an inline keyboard:
 
 ```bash
 telegram keyboard inline -t 123456789 \
-  -m "请选择" \
-  --row "官网=https://example.com|刷新=data:refresh" \
-  --row "关闭=close"
+  -m "Please choose" \
+  --row "Home=https://example.com|Refresh=data:refresh" \
+  --row "Close=close"
 ```
 
 Button rules:

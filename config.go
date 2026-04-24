@@ -19,11 +19,11 @@ type TelegramConfig struct {
 }
 
 type telegramConfigFile struct {
-	BotToken       string   `json:"botToken"`
-	APIBase        string   `json:"apiBase,omitempty"`
-	PollTimeout    any      `json:"pollTimeout,omitempty"`
-	RequestTimeout any      `json:"requestTimeout,omitempty"`
-	AllowedUpdates []string `json:"allowedUpdates,omitempty"`
+	BotToken       string    `json:"botToken"`
+	APIBase        string    `json:"apiBase,omitempty"`
+	PollTimeout    any       `json:"pollTimeout,omitempty"`
+	RequestTimeout any       `json:"requestTimeout,omitempty"`
+	AllowedUpdates *[]string `json:"allowedUpdates,omitempty"`
 }
 
 func defaultTelegramConfig() TelegramConfig {
@@ -65,8 +65,8 @@ func parseTelegramConfigData(data []byte) (TelegramConfig, error) {
 		}
 		cfg.RequestTimeout = duration
 	}
-	if len(raw.AllowedUpdates) > 0 {
-		cfg.AllowedUpdates = append([]string(nil), raw.AllowedUpdates...)
+	if raw.AllowedUpdates != nil {
+		cfg.AllowedUpdates = append([]string{}, (*raw.AllowedUpdates)...)
 	}
 	return cfg, nil
 }
